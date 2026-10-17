@@ -1,0 +1,48 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>社内資料検索 PoC</title>
+<style>body{margin:0;background:#f4f6f4;color:#183b32;font:17px/1.8 'Yu Gothic UI',Meiryo,sans-serif}main{max-width:860px;margin:65px auto;padding:24px}small{color:#53685f}h1{font-size:36px;margin:14px 0}textarea{box-sizing:border-box;width:100%;min-height:100px;padding:16px;border:1px solid #819c92;border-radius:10px;font:inherit}button{background:#17694f;color:white;border:0;border-radius:7px;padding:12px 24px;font:inherit;cursor:pointer}button:disabled{opacity:.5}section{margin:28px 0;background:white;padding:24px;border-radius:10px}blockquote{border-left:4px solid #2e8a68;padding-left:18px;margin-left:0;white-space:pre-wrap}a{color:#156548}#examples button{background:transparent;color:#17694f;padding:4px 12px;border:1px solid #b8cdc4;margin:5px;font-size:14px}.note{font-size:14px;color:#53685f}.question{white-space:pre-wrap;overflow-wrap:anywhere;font-weight:600}.turn{border-top:4px solid #17694f}.turn h2{font-size:25px}.answer-list li{margin:12px 0}.source-details{margin-top:18px}summary{cursor:pointer;font-weight:600}#composer{padding-top:20px;border-top:1px solid #b8cdc4}</style>
+<main><small>dachone-sys / ローカルRAG PoC・公開デモ</small><h1>資料を探す。根拠を確かめる。</h1><p>状態：__MODE__</p><p class="note">実資料モードでは選定した社内PDFを検索し、質問への回答と、その根拠の原文・ページを表示します。架空資料モードは会社の手順を示しません。裏付けを確認できない内容は回答に含めません。</p>
+<div id="history" aria-live="polite"></div><div id="composer"><form id="form"><label for="q">調べたいこと</label><textarea id="q" maxlength="500" required placeholder="例：経費精算はどこから申請する？"></textarea><p><label><input type="checkbox" id="quick"> 要点だけを短く回答する</label></p><p class="note">標準は、前提条件や手順も根拠と照合して回答します。要点だけの場合は説明を短くします。</p><p class="note">Enterで検索 ／ Shift＋Enterで改行。日本語の変換確定では検索しません。</p><p><button id="submit">根拠を確認する</button></p></form>
+<div id="examples"><button data-q="経費精算はどこから申請する？">経費の申請</button><button data-q="打刻を忘れた場合の修正方法は？">打刻忘れ</button><button data-q="経費申請の期限はいつまで？">根拠がない質問</button></div><p class="note">このタブを開いている間、過去の質問と回答を上に残します。履歴はファイルやクラウドへ保存しません。再読み込みすると消えます。各質問は独立して検索します。</p></div>
+<p><a href="/sources">回答に使う社内資料を選ぶ</a></p><p class="note">回答を業務に使う前に、原文の対象者・適用条件・最新版を確認してください。RAGでも誤回答を完全には防げません。</p><p><button id="stop" type="button">ローカルAIを終了する</button></p></main>
+<script>
+const q=document.getElementById('q'),history=document.getElementById('history'),b=document.getElementById('submit'),form=document.getElementById('form');
+let turnCount=0,composing=false,busy=false,ended=false,compositionEndedAt=0;
+for(const e of document.querySelectorAll('[data-q]'))e.onclick=()=>{q.value=e.dataset.q;q.focus()};
+function el(tag,text){const n=document.createElement(tag);n.textContent=text;return n}
+function link(text,url){const a=el('a',text);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a}
+q.addEventListener('compositionstart',()=>{composing=true});
+q.addEventListener('compositionend',()=>{composing=false;compositionEndedAt=Date.now()});
+q.addEventListener('keydown',e=>{
+ if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!composing&&e.keyCode!==229&&Date.now()-compositionEndedAt>100){
+  e.preventDefault();if(!busy&&!ended&&!e.repeat)form.requestSubmit();
+ }
+});
+function render(r,a,turnId){
+ r.append(el('h2',a.status==='answer'?'質問への回答':a.status==='search_results'?'原文の検索結果（AIの回答は保留）':a.reason==='clarify_entity'?'資料の名称を確認してください':a.status==='unknown'?(a.reason==='processing_error'?'AIの処理に失敗しました':'回答を保留しています'):'根拠資料'),el('p',a.message));
+ if(a.answer?.length){const list=el('ol','');list.className='answer-list';for(const item of a.answer){const row=el('li',item.text+' ');for(const number of item.citations){const cite=el('a','['+number+']');cite.href='#'+turnId+'-source-'+number;row.append(cite)}list.append(row)}r.append(list);}
+ for(const note of a.limitations||[]){const p=el('p',note);p.className='note';r.append(p);}
+ if(a.answer?.length)r.append(el('h3','根拠の原文と資料'));
+ for(const c of a.evidence||[]){
+  const details=el('details','');details.className='source-details';if(c.number)details.id=turnId+'-source-'+c.number;
+  details.append(el('summary',(c.number?'['+c.number+'] ':'')+c.title+' / PDF '+c.page+'ページ'));
+  if(c.context)details.append(el('small','根拠の位置：'+c.context));details.append(el('blockquote',c.quote));
+  if(c.url){const row=el('p','');row.append(link('PDFの該当ページを開く',c.url));const download=link('PDFを保存する',c.url.split('#')[0]);download.download=c.title+'.pdf';row.append(document.createTextNode('　'),download);r.append(row)}
+  if(c.source_url)details.append(link('イントラ上の原本を開く',c.source_url));
+  if(c.local_path){const path=el('p','保存場所：'+c.local_path);path.className='note';path.style.overflowWrap='anywhere';details.append(path)}
+  if(c.revision)details.append(el('small','版：'+c.revision));r.append(details);
+ }
+ if(a.candidates?.length){r.append(el('h3','検索で見つかった候補（回答の根拠としては未確認）'));for(const c of a.candidates){const p=el('p','');p.append(link(c.title+' / PDF '+c.page+'ページ',c.url));r.append(p)}}
+ for(const s of a.suggestions||[]){const button=el('button',s.label);button.type='button';button.onclick=()=>{if(busy||ended)return;q.value=s.question;q.focus();form.requestSubmit()};r.append(button,document.createTextNode('　'));}
+}
+form.onsubmit=async e=>{
+ e.preventDefault();if(busy||ended)return;const question=q.value.trim();if(question.length<2){q.setCustomValidity('2文字以上で質問してください。');q.reportValidity();return}q.setCustomValidity('');
+ const fast=document.getElementById('quick').checked;busy=true;b.disabled=true;const turnId='turn-'+(++turnCount),r=el('section','');r.className='turn';r.id=turnId;
+ const heading=el('p',question);heading.className='question';r.append(heading);const pending=el('p','PC内で資料を読み、回答と根拠を照合しています…');r.append(pending);history.append(r);q.value='';q.focus();r.scrollIntoView({block:'start',behavior:'smooth'});
+ try{
+  const res=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json','X-PoC-Token':'__TOKEN__'},body:JSON.stringify({question,fast})});if(!res.ok)throw Error();const a=await res.json();pending.remove();render(r,a,turnId);
+ }catch{pending.textContent='接続できません。起動状態を確認してください。';const retry=el('button','この質問を入力欄に戻す');retry.type='button';retry.onclick=()=>{q.value=question;q.focus()};r.append(retry)}finally{busy=false;b.disabled=ended;document.getElementById('composer').scrollIntoView({block:'start',behavior:'smooth'});q.focus()}
+};
+q.addEventListener('input',()=>q.setCustomValidity(''));
+document.addEventListener('click',e=>{const a=e.target.closest('a[href^="#turn-"]');if(a){const source=document.getElementById(a.getAttribute('href').slice(1));if(source)source.open=true}});
+document.getElementById('stop').onclick=async()=>{try{const res=await fetch('/shutdown',{method:'POST',headers:{'X-PoC-Token':'__TOKEN__'}});if(res.ok){ended=true;b.disabled=true;history.append(el('p','ローカルAIを終了しました。再開するには起動ファイルを開いてください。'))}}catch{history.append(el('p','終了の接続を確認できませんでした。'))}};
+</script></html>
